@@ -1,0 +1,92 @@
+#导入库
+import sensor,image,time,math
+from pyb import UART
+import ustruct
+
+#变量初始化
+GRAYSCALE_THRESHOLD=[(0,64)]
+#黑线为(0,64)，白线为(128,255)
+
+#ROI区域初始化
+ROIS=[
+      (0,100,160,20,0.7),
+      (0,50,160,20,0.3),
+      (0,0,160,20,0.1)
+     ]
+#各个值的含义分别为左上顶点坐标(x,y),矩形宽和搞(w,h),权值w
+
+#权值和初始化
+weight_sum=0
+for r in ROIS:weight_sum+=r[4]
+#权值和为每一个ROI区域的第四项相加，即为权重综合
+
+#相机初始化
+sensor.reset()
+sensor.set_pixformat(sensor.GRAYSCALE)
+sensor.set_framesize(sensor.QQVGA)
+sensor.skip_frames(30)
+sensor.set_auto_gain(False)
+sensor.set_auto_whitebal(False)
+clock=time.clock()
+uart=UART(3,115200)
+uart.init(115200,bits=8,parity=None,stop=1)
+
+#发送数据函数
+def sending_data(deflec_angle):
+    global uart;
+    data=ustruct.pack("<bbhb",
+                      0x2C,
+                      0x12,
+                      int(deflec_angle),
+                      0x5B)
+    uart.write(data);
+
+
+while True:
+    clock.tick()
+    img=sensor.snapshot()
+
+    #初始化中心点坐标总和
+    center_sum=0
+    center_pos=0
+
+    #遍历每一个ROI区域，找符合条件的色块，并合并成一条直线
+    for r in ROIS:
+        blobs=img.find_blobs(GRAYSCALE_THRESHOLD,roi=r[0:4],merge=True)
+
+        #当找到色块后，不断更新最大色块以获取最大色块的值
+        if blobs:
+            max_pixel=0
+            largest_blob=0
+
+            #遍历色块
+            for i in range(len(blobs)):
+                if blobs[i].pixels()>max_pixel:
+                    max_pixel=blobs[i].pixels()
+                    largest_blob=i
+
+            #找完最大色块之后就要在每个色块上画图了
+            img.draw_rectangle(blobs[largest_blob].rect())
+            #img.draw_rectangle((0,0,30,30))
+            img.draw_cross(blobs[largest_blob].cx(),
+                           blobs[largest_blob].cy())
+
+            #接下来就要用到权重了
+            center_sum+=blobs[largest_blob].cx()*r[4]
+            #中心点坐标总和=Σ(每一块区域中心点坐标*权重)
+
+    center_pos=(center_sum/weight_sum)
+    #对于整个图像而言，中心坐标=中心点坐标总和/权重总和
+
+    deflection_angle = 0
+    deflection_angle = -math.atan((center_pos - 80) / 60)
+    # 偏转角公式为: ang = -arctan((center_pos - (ImageWidth/2)) / (ImageHeight/2))
+    deflection_angle = math.degrees(deflection_angle)
+    # 由于用到了 arctan，故返回的是一个弧度值，需要将其转换为角度
+
+    #串口发送
+    sending_data(deflection_angle)
+
+    #打印相关数值
+    print("偏转角为: ",int(deflection_angle))
+    print(clock.fps())
